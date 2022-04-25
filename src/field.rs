@@ -1,61 +1,69 @@
-use std::ops::{Add, Div, Mul, Neg, Sub};
+pub use isochronous_finite_fields::GF;
+
+use rand_core::RngCore;
+use std::ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign};
 
 pub trait FiniteField
 where
     Self: Sized
         + Add<Output = Self>
+        + AddAssign
         + Sub<Output = Self>
+        + SubAssign
         + Mul<Output = Self>
-        + Div<Output = Self>
-        + Neg<Output = Self>
+        + MulAssign
         + PartialEq
         + Eq
         + PartialOrd
         + Ord
-        + Copy,
+        + Copy
+        + std::fmt::Debug,
 {
     fn zero() -> Self;
     fn one() -> Self;
 
-    fn pow(self, exp: Self) -> Self;
+    fn random<R: RngCore>(rng: &mut R) -> Self;
+
+    fn minv(self) -> Self;
+
+    fn ainv(self) -> Self {
+        Self::zero() - self
+    }
+
+    fn pow(self, exp: usize) -> Self {
+        let mut out = Self::one();
+        let mut exp_mask = 1usize.rotate_right(1);
+
+        while exp_mask != 0 {
+            out *= out;
+
+            if (exp_mask & exp) != 0 {
+                out *= self;
+            }
+
+            exp_mask >>= 1;
+        }
+
+        out
+    }
 }
 
-impl FiniteField for i32 {
+impl FiniteField for GF {
     fn zero() -> Self {
-        0
+        GF(0)
     }
 
     fn one() -> Self {
-        1
+        GF(1)
     }
 
-    fn pow(self, exp: Self) -> Self {
-        self.pow(exp as u32)
+    fn random<R: RngCore>(rng: &mut R) -> Self {
+        let mut b = [0];
+        rng.fill_bytes(&mut b);
+        GF(b[0])
     }
-}
 
-pub struct EnumerateIter<F, I> {
-    acc: F,
-    inner: I,
-}
-
-impl<F: FiniteField, I: Iterator> EnumerateIter<F, I> {
-    pub fn new(inner: I) -> Self {
-        Self {
-            acc: F::zero(),
-            inner,
-        }
-    }
-}
-
-impl<F: FiniteField, I: Iterator> Iterator for EnumerateIter<F, I> {
-    type Item = (F, I::Item);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().map(|i| {
-            let out = (self.acc, i);
-            self.acc = self.acc + F::one();
-            out
-        })
+    fn minv(self) -> Self {
+        self.multiplicative_inverse()
     }
 }

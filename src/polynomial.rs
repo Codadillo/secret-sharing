@@ -1,103 +1,119 @@
-use std::{fmt::Display, ops::Add};
+use std::{fmt::Debug, ops::Add};
 
-use crate::field::{FiniteField, EnumerateIter};
+use crate::field::FiniteField;
 
-#[derive(Debug)]
+#[derive(Clone)]
 pub struct Polynomial<F> {
-    coeffs: Vec<(F, F)>,
+    pub coeffs: Vec<F>,
 }
 
-impl<F: Display> Display for Polynomial<F> {
+impl<F: Debug> Debug for Polynomial<F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut c = self.coeffs.iter();
-        if let Some((i, a)) = c.next() {
-            write!(f, "{a}x^{i}")?;
+        let mut c = self.coeffs.iter().enumerate();
+        if let Some((_, a)) = c.next() {
+            write!(f, "{a:?}")?;
         }
 
         for (i, a) in c {
-            write!(f, " + {a}x^{i}")?;
+            write!(f, " + {a:?}x")?;
+            if i > 1 {
+                write!(f, "^{i}")?;
+            }
         }
 
         Ok(())
     }
 }
 
-impl<F> FromIterator<(F, F)> for Polynomial<F> {
-    fn from_iter<T: IntoIterator<Item = (F, F)>>(iter: T) -> Self {
+impl<F> FromIterator<F> for Polynomial<F> {
+    fn from_iter<T: IntoIterator<Item = F>>(iter: T) -> Self {
         Self {
             coeffs: iter.into_iter().collect(),
         }
     }
 }
 
-impl<F: FiniteField + Display> Polynomial<F> {
+impl<F: FiniteField> Polynomial<F> {
     pub fn zero() -> Self {
         Self {
-            coeffs: vec![(F::zero(), F::zero())],
+            coeffs: vec![F::zero()],
         }
     }
     pub fn one() -> Self {
         Self {
-            coeffs: vec![(F::zero(), F::one())],
+            coeffs: vec![F::one()],
         }
     }
 
-    pub fn new_ordered(coeffs: impl IntoIterator<Item = F>) -> Self {
-        EnumerateIter::new(coeffs.into_iter()).collect()
+    pub fn new(coeffs: Vec<F>) -> Self {
+        Self { coeffs }
+    }
+
+    pub fn truncate(&mut self) {
+        while Some(&F::zero()) == self.coeffs.last() {
+            self.coeffs.pop();
+        }
     }
 
     pub fn add(&self, rhs: &Self) -> Self {
-        let mut sum = Polynomial::new_ordered([]);
+        let (mut a, b) = if self.coeffs.len() > rhs.coeffs.len() {
+            (self.clone(), rhs)
+        } else {
+            (rhs.clone(), self)
+        };
 
-        let mut c1 = self.coeffs.iter().peekable();
-        let mut c2 = rhs.coeffs.iter().peekable();
+        for (i, &c) in b.coeffs.iter().enumerate() {
+            a.coeffs[i] = a.coeffs[i] + c;
+        }
 
-        while let (Some(&&(i, a)), Some(&&(j, b))) = (c1.peek(), c2.peek()) {
-            if i == j {
-                sum.coeffs.push((i, a + b));
-                c1.next();
-                c2.next();
-            } else if i < j {
-                sum.coeffs.push((i, a));
-                c1.next();
-            } else {
-                sum.coeffs.push((j, b));
-                c2.next();
+        a
+    }
+    pub fn mul(&self, rhs: &Self) -> Self {
+        let mut out_coeffs = vec![F::zero(); self.coeffs.len() * rhs.coeffs.len()];
+
+        for (i, &a) in self.coeffs.iter().enumerate() {
+            for (j, &b) in rhs.coeffs.iter().enumerate() {
+                out_coeffs[i + j] = out_coeffs[i + j] + a * b;
             }
         }
 
-        sum.coeffs.extend(c1);
-        sum.coeffs.extend(c2);
-
-        sum
-    }
-    pub fn mul(&self, rhs: &Self) -> Self {
-        self.coeffs
-            .iter()
-            .map(|&(i, a)| {
-                let mut m: Polynomial<_> =
-                    rhs.coeffs.iter().map(|&(j, b)| (i + j, a * b)).collect();
-                m.coeffs.sort_by(|(i, _), (j, _)| i.cmp(j));
-                m
-            })
-            .fold(Self::zero(), |acc, p| acc.add(&p))
+        Polynomial::new(out_coeffs)
     }
     pub fn scale(&self, rhs: F) -> Self {
-        self.coeffs.iter().map(|&(i, a)| (i, a * rhs)).collect()
-    }
-    pub fn scale_div(&self, rhs: F) -> Self {
-        self.coeffs.iter().map(|&(i, a)| (i, a / rhs)).collect()
+        self.coeffs.iter().map(|&a| a * rhs).collect()
     }
 
     pub fn get(&self, x: F) -> F {
         self.coeffs
             .iter()
-            .map(|&(i, a)| a * x.pow(i))
+            .enumerate()
+            .map(|(i, &a)| a * x.pow(i))
             .fold(F::zero(), Add::add)
     }
 
+    pub fn lagrange_zero(points: impl Iterator<Item = (F, F)> + Clone) -> F {
+        let mut out = F::zero();
+        let mut out_denom = F::one();
+
+        for (xi, y) in points.clone() {
+            let mut numer = F::one();
+            let mut denom = F::one();
+            for (xj, _) in points.clone() {
+                if xi != xj {
+                    numer = numer * xj.ainv();
+                    denom = denom * (xi - xj);
+                }
+            }
+
+            out = out * denom + numer * y * out_denom;
+            out_denom = out_denom * denom;
+        }
+
+        out * out_denom.minv()
+    }
+
     pub fn lagrange_new(points: impl Iterator<Item = (F, F)> + Clone) -> Self {
-        let mut out = Polynomial::new_ordered([]);
+        let mut out = Polynomial::zero();
         let mut out_denom = F::one();
 
         for (xi, y) in points.clone() {
@@ -105,7 +121,7 @@ impl<F: FiniteField + Display> Polynomial<F> {
             let mut denom = F::one();
             for (xj, _) in points.clone() {
                 if xi != xj {
-                    numer = numer.mul(&Self::new_ordered([-xj, F::one()]));
+                    numer = numer.mul(&Self::new(vec![xj.ainv(), F::one()]));
                     denom = denom * (xi - xj);
                 }
             }
@@ -114,6 +130,9 @@ impl<F: FiniteField + Display> Polynomial<F> {
             out_denom = out_denom * denom;
         }
 
-        out.scale_div(out_denom)
+        out = out.scale(out_denom.minv());
+        out.truncate();
+
+        out
     }
 }
